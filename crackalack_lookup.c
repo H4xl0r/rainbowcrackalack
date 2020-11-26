@@ -902,7 +902,7 @@ void *host_thread_precompute(void *ptr) {
   if (output_len % gws != 0)
     num_exec_blocks++;
 
-  /*printf("Host thread #%u started; GWS: %zu.\n", gpu->device_number, gws);*/
+  printf("Host thread #%u started; GWS: %zu.\n", gpu->device_number, gws);
 
   /* This will hold the results from this one GPU. */
   output = calloc(output_len, sizeof(cl_ulong));
