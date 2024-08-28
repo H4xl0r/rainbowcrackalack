@@ -1,6 +1,6 @@
 /*
  * Rainbow Crackalack: crackalack_lookup.c
- * Copyright (C) 2018-2020  Joe Testa <jtesta@positronsecurity.com>
+ * Copyright (C) 2018-2021  Joe Testa <jtesta@positronsecurity.com>
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms version 3 of the GNU General Public License as
@@ -151,7 +151,7 @@ typedef struct {
 
 unsigned int count_tables(char *dir);
 void find_rt_params(char *dir, rt_parameters *rt_params);
-void free_loaded_hashes(char **usernames, char **hashes, unsigned int *num_hashes);
+void free_loaded_hashes(char **usernames, char **hashes);
 void *host_thread_false_alarm(void *ptr);
 void *preloading_thread(void *ptr);
 void print_eta_precompute();
@@ -192,6 +192,9 @@ unsigned int is_amd_gpu = 0;
 /* The global work size, as over-ridden by the user on the command line. */
 size_t user_provided_gws = 0;
 
+/* The platform number to disable (-1 to not disable any). */
+int disable_platform = -1;
+
 /* The total number of precomputed indices loaded into memory.  Each one of these is
  * a cl_ulong (8 bytes). */
 uint64_t total_precomputed_indices_loaded = 0;
@@ -227,6 +230,9 @@ struct timespec precompute_start_time = {0};
 
 /* The time at which table searching begins. */
 struct timespec search_start_time = {0};
+
+/* Number of uncracked hashes. */
+unsigned int num_hashes = 0;
 
 /* Number of hashes precomputed so far. */
 unsigned int num_hashes_precomputed = 0;
@@ -518,23 +524,23 @@ unsigned int count_tables(char *dir) {
 
 
 /* Free the hashes we loaded from disk or command line. */
-void free_loaded_hashes(char **usernames, char **hashes, unsigned int *num_hashes) {
+void free_loaded_hashes(char **usernames, char **hashes) {
   unsigned int i = 0;
 
   if (usernames != NULL) {
-    for (i = 0; i < *num_hashes; i++) {
+    for (i = 0; i < num_hashes; i++) {
       FREE(usernames[i]);
     }
     FREE(usernames);
   }
 
   if (hashes != NULL) {
-    for (i = 0; i < *num_hashes; i++) {
+    for (i = 0; i < num_hashes; i++) {
       FREE(hashes[i]);
     }
     FREE(hashes);
   }
-  *num_hashes = 0;
+  num_hashes = 0;
 }
 
 
@@ -1408,16 +1414,23 @@ void print_eta_search(unsigned int num_tables_processed, unsigned int num_tables
 
     seconds_to_human_time(eta_str, sizeof(eta_str), num_seconds_left);
   }
-  printf("  Estimated time remaining (at most): %s\n\n", eta_str); fflush(stdout);
+  printf("  Estimated time remaining (at most): %s\n", eta_str); fflush(stdout);
 }
 
 
 void print_usage_and_exit(char *prog_name, int exit_code) {
 #ifdef _WIN32
-  fprintf(stderr, "Usage: %s rainbow_table_directory (single_hash | filename_with_many_hashes.txt)\n\nExample:\n    %s D:\\rt_ntlm\\ 64f12cddaa88057e06a81b54e73b949b\n    %s D:\\rt_ntlm\\ C:\\Users\\jsmith\\Desktop\\hashes.txt [-gws GWS]\n\n", prog_name, prog_name, prog_name);
+  char *dir1 = "D:\\rt_ntlm\\";
+  char *dir2 = "C:\\Users\\jsmith\\Desktop\\";
 #else
-  fprintf(stderr, "Usage: %s rainbow_table_directory (single_hash | filename_with_many_hashes.txt)\n\nExample:\n    %s /export/rt_ntlm/ 64f12cddaa88057e06a81b54e73b949b\n    %s /export/rt_ntlm/ /home/user/hashes.txt [-gws GWS]\n\n", prog_name, prog_name, prog_name);
+  char *dir1 = "/export/rt_ntlm/";
+  char *dir2 = "/home/user/";
 #endif
+
+  fprintf(stderr, "%sUsage:%s %s rainbow_table_directory (single_hash | filename_with_many_hashes.txt) [-gws GWS] [-disable-platform N]\n\n", WHITEB, CLR, prog_name);
+  fprintf(stderr, "    %s-gws GWS%s    (Optional) Sets the global work size for each GPU.  This can significantly affect the speed.  To tune this setting, start with multiplying the max compute units by the max work group size (both are reported on program start-up).  Then increase/decrease the value and time the results.  For example, if the max compute units is 20, and the max work group size is 1024, try using 20 x 1024 = 20480, then 20480 - 1024 = 19456, 20480 - 2048 = 18432, 2048 + 1024 = 21504, etc.  If you find a value that works better than the automatic setting, please report your findings at: https://github.com/jtesta/rainbowcrackalack/issues\n\n", WHITEB, CLR);
+  fprintf(stderr, "    %s-disable-platform N%s    (Optional) Disables a platform from being used (platform numbers are reported on program start-up).  Useful when experiencing strange problems on mixed-GPU systems.  Try disabling each platform one at a time and see if the program behaves normally.\n\n\n", WHITEB, CLR);
+  fprintf(stderr, "%sExamples:%s\n    %s %s 64f12cddaa88057e06a81b54e73b949b\n    %s %s %shashes_one_per_line.txt\n    %s %s %spwdump.txt\n\n", WHITEB, CLR, prog_name, dir1, prog_name, dir1, dir2, prog_name, dir1, dir2);
   exit(exit_code);
 }
 
@@ -1723,13 +1736,15 @@ preloaded_table *get_preloaded_table() {
 void search_tables(unsigned int total_tables, precomputed_and_potential_indices *ppi, thread_args *args) {
   unsigned int num_uncracked = 0, current_table = 0;
   struct timespec start_time_table = {0};
-  precomputed_and_potential_indices *ppi_cur = ppi;
+  precomputed_and_potential_indices *ppi_cur = NULL;
   preloaded_table *pt = NULL;
 
 
   while (1) {
 
     /* Count the number of uncracked hashes we have left. */
+    ppi_cur = ppi;
+    num_uncracked = 0;
     while (ppi_cur != NULL) {
       if (ppi_cur->plaintext == NULL)
 	num_uncracked++;
@@ -1769,6 +1784,7 @@ void search_tables(unsigned int total_tables, precomputed_and_potential_indices 
 
     printf("  Table fully processed in %.1f seconds.\n", get_elapsed(&start_time_table)); fflush(stdout);
     print_eta_search(num_tables_processed, total_tables);
+    printf("  Cracked %u of %u hashes.\n\n", num_cracked, num_hashes);
 
     /* We checked the potential matches above, so there's nothing else to do with
      * them. */
@@ -1796,7 +1812,7 @@ void search_tables(unsigned int total_tables, precomputed_and_potential_indices 
 
 int main(int ac, char **av) {
   char *rt_dir = NULL, *single_hash = NULL, *filename = NULL, *file_data = NULL, **usernames = NULL, **hashes = NULL, *line = NULL, *pot_file_data = NULL;
-  unsigned int i = 0, j = 0, max_num_hashes = 0, num_hashes = 0, num_colons = 0, file_format = 0, err = 0;
+  unsigned int i = 0, j = 0, max_num_hashes = 0, num_colons = 0, file_format = 0, err = 0;
   FILE *f = NULL;
   struct stat st = {0};
   thread_args *args = NULL;
@@ -1820,12 +1836,18 @@ int main(int ac, char **av) {
   setlocale(LC_NUMERIC, "");
   if ((ac < 3) || (ac > 5))
     print_usage_and_exit(av[0], -1);
-  else if ((ac == 5) && (strcmp(av[3], "-gws") != 0))
+  else if ((ac == 5) && (strcmp(av[3], "-gws") != 0) && (strcmp(av[3], "-disable-platform") != 0))
     print_usage_and_exit(av[0], -1);
 
+  if (ac == 5) {
+    if (strcmp(av[3], "-gws") == 0)
+      user_provided_gws = (unsigned int)atoi(av[4]);
+    else if (strcmp(av[3], "-disable-platform") == 0)
+      disable_platform = (unsigned int)atoi(av[4]);
+  }
 
   /* Initialize the devices. */
-  get_platforms_and_devices(MAX_NUM_PLATFORMS, platforms, &num_platforms, MAX_NUM_DEVICES, devices, &num_devices, VERBOSE);
+  get_platforms_and_devices(disable_platform, MAX_NUM_PLATFORMS, platforms, &num_platforms, MAX_NUM_DEVICES, devices, &num_devices, VERBOSE);
 
   /* Check the device type and set flags.*/
   if (num_devices > 0) {
@@ -1863,9 +1885,7 @@ int main(int ac, char **av) {
     strncpy(hashcat_pot_filename, av[3], sizeof(hashcat_pot_filename) - 1);
     hashcat_pot_filename[sizeof(hashcat_pot_filename) - 1] = '\0';
     strncat(hashcat_pot_filename, ".hashcat", sizeof(hashcat_pot_filename) - 1);
-  } else if (ac == 5)
-    user_provided_gws = (unsigned int)atoi(av[4]);
-
+  }
 
   /* Open the JTR pot file for reading.  We will check the hash(es) to see if any are
    * already cracked. */
@@ -1899,6 +1919,9 @@ int main(int ac, char **av) {
     filename = av[2];
   else {
     single_hash = av[2];
+
+    /* Ensure that hash is lowercase. */
+    str_to_lowercase(single_hash);
 
     /* If this hash is already in the pot file, then there's nothing else to do. */
     if (pot_file_data && strstr(pot_file_data, single_hash)) {
@@ -2078,8 +2101,6 @@ int main(int ac, char **av) {
       goto err;
     }
 
-    /* Ensure that hash is lowercase. */
-    str_to_lowercase(single_hash);
     usernames[0] = NULL;
     hashes[0] = strdup(single_hash);
     num_hashes = 1;
@@ -2212,7 +2233,7 @@ int main(int ac, char **av) {
   printf(" %s* Statistics *%s\n\n          Number of tables processed: %u\n              Number of false alarms: %" QUOTE PRIu64"\n          Number of chains processed: %" QUOTE PRIu64"\n\n                Time spent per table: %s\n     False alarms checked per second: %" QUOTE ".1f\n\n         False alarms per no. chains: %.5f%%\n  Successful cracks per false alarms: %.5f%%\n  Successful cracks per total chains: %.8f%%\n\n\n", WHITEB, CLR, num_tables_processed, num_falsealarms, num_chains_processed, time_per_table_str, (double)num_falsealarms / time_falsealarms, ((double)num_falsealarms / (double)num_chains_processed) * 100.0, ((double)num_cracked / (double)num_falsealarms) * 100.0, ((double)num_cracked / (double)num_chains_processed) * 100.0);
 
   free_precomputed_and_potential_indices(&ppi_head);
-  free_loaded_hashes(usernames, hashes, &num_hashes);
+  free_loaded_hashes(usernames, hashes);
   FREE(args);
   pthread_barrier_destroy(&barrier);
   return 0;
@@ -2221,7 +2242,7 @@ int main(int ac, char **av) {
   FCLOSE(f);
   FREE(file_data);
   free_precomputed_and_potential_indices(&ppi_head);
-  free_loaded_hashes(usernames, hashes, &num_hashes);
+  free_loaded_hashes(usernames, hashes);
   FREE(args);
   pthread_barrier_destroy(&barrier);
   return -1;

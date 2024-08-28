@@ -59,14 +59,20 @@ Then starting the build with:
 
     # make clean; ./make_windows.sh
 
+However, if you prefer to build a complete package (which is useful for testing on other Windows machines), run:
+
+    # ./scripts/build_windows_zip.sh
+
 ## Change Log
-### v1.3-dev (???)
+### v1.3 (February 26, 2021)
  - Improved speed of NTLM9 precomputation by 9.5x and false alarm checks by 4.5x!
  - Fixed lookup on AMD ROCm.
  - Added support for pwdump-formatted hash files.
  - Added time estimates for precomputation phase.
  - Disable Intel GPUs when found on systems with AMD or NVIDIA GPUs.
  - Fixed bug in counting tables during lookup.
+ - Fixed bug where lookups would continue even though all hashes were cracked.
+ - Fixed cache lookup when a single hash in uppercase was provided.
  - Added lookup colors.
 
 ### v1.2 (April 2, 2020)
